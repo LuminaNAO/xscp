@@ -53,6 +53,12 @@ xscp -P 2222 ./file.tar.gz user@host:/tmp/
 
 ## Install
 
+**Arch Linux (AUR):**
+```bash
+yay -S xscp
+```
+
+**Manual:**
 ```bash
 git clone https://codeberg.org/LuminaNAO/xscp.git
 cd xscp

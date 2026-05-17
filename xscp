@@ -670,7 +670,12 @@ case "${1:-}" in
         echo "  xscp <query>          Fuzzy search history"
         echo "  xscp [scp args...]    Passthrough to scp (logged to history)"
         echo ""
-        echo "Dependencies: scp, fzf (required), nnn (optional), sshfs (optional)"
+        echo "nnn controls:"
+        echo "  ↑↓/jk  navigate       →/l/Enter  open dir"
+        echo "  ←/h    parent dir     .          toggle hidden files"
+        echo "  Space  select         q          cancel / select dir"
+        echo ""
+        echo "Dependencies: scp, fzf, nnn, openssh, sshfs (all required)"
         ;;
     --version|-v)
         echo "xscp v${VERSION}"
