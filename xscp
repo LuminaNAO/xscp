@@ -91,13 +91,13 @@ nnn_hint() {
     echo -e "  ${BOLD}↑↓${NC}/jk  navigate       ${BOLD}→${NC}/l/Enter  open dir" >&2
     echo -e "  ${BOLD}←${NC}/h   parent dir     ${BOLD}.${NC}          toggle hidden files" >&2
     if [[ "$mode" == "dest" ]]; then
-        echo -e "  ${BOLD}Enter${NC} select highlighted file or folder" >&2
+        echo -e "  ${BOLD}Space${NC} select highlighted file or folder" >&2
         echo -e "  ${BOLD}q${NC}     select current directory as destination" >&2
     elif [[ "$mode" == "send" ]]; then
-        echo -e "  ${BOLD}Enter${NC} select highlighted file or folder to send" >&2
+        echo -e "  ${BOLD}Space${NC} select highlighted file or folder to send" >&2
         echo -e "  ${BOLD}q${NC}     cancel" >&2
     else
-        echo -e "  ${BOLD}Enter${NC} select highlighted file" >&2
+        echo -e "  ${BOLD}Space${NC} select highlighted file" >&2
         echo -e "  ${BOLD}q${NC}     cancel" >&2
     fi
 }
