@@ -47,6 +47,16 @@ check_deps() {
 has_nnn() { command -v nnn &>/dev/null; }
 has_sshfs() { command -v sshfs &>/dev/null; }
 
+nnn_hint() {
+    local mode="${1:-file}"
+    echo -ne "${CYAN}nnn:${NC} ↑↓/jk navigate | →/l/Enter open dir | ←/h parent | " >&2
+    if [[ "$mode" == "dest" ]]; then
+        echo -e "Enter select item | q select current dir" >&2
+    else
+        echo -e "Enter select file | q cancel" >&2
+    fi
+}
+
 # --- History functions ---
 
 # Format: timestamp|direction|user@host:port|remote_path|local_path
@@ -191,6 +201,7 @@ pick_local_file() {
     local start_dir="${2:-.}"
     info "$prompt"
     if has_nnn; then
+        nnn_hint
         local sel
         sel=$(mktemp)
         nnn -p "$sel" "$start_dir" < /dev/tty > /dev/tty
@@ -212,22 +223,24 @@ pick_local_dest() {
     local start_dir="${2:-.}"
     info "$prompt (or type a path)"
     if has_nnn; then
-        local sel
+        nnn_hint "dest"
+        local sel lastdir
         sel=$(mktemp)
-        # nnn picker mode - select a directory
-        nnn -p "$sel" "$start_dir" < /dev/tty > /dev/tty
+        lastdir=$(mktemp)
+        # nnn picker mode with last-dir tracking
+        NNN_TMPFILE="$lastdir" nnn -p "$sel" "$start_dir" < /dev/tty > /dev/tty
         if [[ -s "$sel" ]]; then
-            local picked
-            picked=$(cat "$sel")
-            rm -f "$sel"
-            # If they picked a directory, use it; if a file, use its parent
-            if [[ -d "$picked" ]]; then
-                echo "$picked"
-            else
-                echo "$picked"
-            fi
+            # User selected a specific item
+            cat "$sel"
+            rm -f "$sel" "$lastdir"
+        elif [[ -s "$lastdir" ]]; then
+            # User pressed q - use the last directory they were in
+            local dir
+            dir=$(sed 's/^cd "\(.*\)"/\1/' "$lastdir")
+            echo "$dir"
+            rm -f "$sel" "$lastdir"
         else
-            rm -f "$sel"
+            rm -f "$sel" "$lastdir"
             echo "$start_dir"
         fi
     else
@@ -278,14 +291,20 @@ pick_remote_path() {
     info "$prompt (browsing ${userhost}:${start_dir})"
     local selected
     if has_nnn; then
-        local sel
+        nnn_hint "dest"
+        local sel lastdir
         sel=$(mktemp)
-        nnn -p "$sel" "$mountpoint" < /dev/tty > /dev/tty
+        lastdir=$(mktemp)
+        NNN_TMPFILE="$lastdir" nnn -p "$sel" "$mountpoint" < /dev/tty > /dev/tty
         if [[ -s "$sel" ]]; then
             selected=$(cat "$sel")
-            rm -f "$sel"
+            rm -f "$sel" "$lastdir"
+        elif [[ -s "$lastdir" ]]; then
+            # User pressed q - use the last directory they were in
+            selected=$(sed 's/^cd "\(.*\)"/\1/' "$lastdir")
+            rm -f "$sel" "$lastdir"
         else
-            rm -f "$sel"
+            rm -f "$sel" "$lastdir"
             _xscp_unmount "$mountpoint"
             return 1
         fi
