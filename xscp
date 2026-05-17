@@ -454,11 +454,21 @@ do_send() {
     local ctl
     ctl=$(_xscp_ctl_path "$userhost" "$port")
 
-    # Build scp command
+    # Build scp command - handle multiple newline-separated local paths
     local scp_args=(-o "ControlPath=${ctl}")
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
-    [[ -d "$local_path" ]] && scp_args+=(-r)
-    scp_args+=("$local_path" "${userhost}:${remote_path}")
+    # Check if any selected path is a directory
+    local need_r=false
+    while IFS= read -r lp; do
+        [[ -z "$lp" ]] && continue
+        [[ -d "$lp" ]] && need_r=true
+    done <<< "$local_path"
+    [[ "$need_r" == true ]] && scp_args+=(-r)
+    while IFS= read -r lp; do
+        [[ -z "$lp" ]] && continue
+        scp_args+=("$lp")
+    done <<< "$local_path"
+    scp_args+=("${userhost}:${remote_path}")
 
     # Show full command and confirm
     echo ""
@@ -472,7 +482,10 @@ do_send() {
 
     if [[ $rc -eq 0 ]]; then
         echo -e "${GREEN}Transfer complete${NC}"
-        history_add "send" "$userhost" "$port" "$remote_path" "$local_path"
+        while IFS= read -r lp; do
+            [[ -z "$lp" ]] && continue
+            history_add "send" "$userhost" "$port" "$remote_path" "$lp"
+        done <<< "$local_path"
     else
         echo -e "${RED}Transfer failed (exit $rc)${NC}"
     fi
