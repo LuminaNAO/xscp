@@ -7,7 +7,7 @@ Interactive scp wrapper with transfer history, fuzzy matching, and TUI file brow
 - **Interactive menu** — send, receive, or replay past transfers
 - **Transfer history** — every scp is logged to `~/.xscp_history` with user, host, port, and paths
 - **Fuzzy search** — find and replay past transfers by keyword
-- **File browsing** — pick local/remote files with nnn (or fzf fallback)
+- **File browsing** — pick local/remote files with nnn
 - **Remote browsing** — mounts remote filesystem via sshfs for interactive navigation, auto-unmounts on completion
 - **Passthrough mode** — use as a drop-in scp replacement, transfers are silently logged
 - **Smart defaults** — remembers ports per host, pulls targets from history and `~/.ssh/config`
@@ -48,8 +48,8 @@ xscp -P 2222 ./file.tar.gz user@host:/tmp/
 |------------|----------|---------|
 | `scp`      | yes      | File transfer |
 | `fzf`      | yes      | Fuzzy selection menus |
-| `nnn`      | no       | TUI file browser (falls back to fzf) |
-| `sshfs`    | no       | Remote filesystem browsing (falls back to manual path entry) |
+| `nnn`      | yes      | TUI file browser |
+| `sshfs`    | yes      | Remote filesystem browsing |
 
 ## Install
 
