@@ -54,7 +54,7 @@ xscp -P 2222 ./file.tar.gz user@host:/tmp/
 ## Install
 
 ```bash
-git clone <repo-url>
+git clone https://codeberg.org/LuminaNAO/xscp.git
 cd xscp
 ./install.sh
 ```
