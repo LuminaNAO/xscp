@@ -169,12 +169,24 @@ pick_target() {
     local prompt="${1:-Select remote target: }"
     local targets
     targets=$(known_targets)
+    local new_entry="+ New host (enter user@ip)"
     if [[ -n "$targets" ]]; then
-        echo "$targets" | sort -u | fzf --height=15 --reverse --print-query --prompt="$prompt" | tail -1
+        local picked
+        picked=$(printf '%s\n' "$new_entry" "$targets" | sort -u | sed "s|^${new_entry}$|${new_entry}|" | { echo "$new_entry"; grep -v "^${new_entry}$" || true; } | fzf --height=15 --reverse --prompt="$prompt") || return 1
+        if [[ "$picked" == "$new_entry" ]]; then
+            echo -ne "${CYAN}Enter user@host: ${NC}" >&2
+            local target
+            read -r target < /dev/tty
+            [[ -z "$target" ]] && return 1
+            echo "$target"
+        else
+            echo "$picked"
+        fi
     else
-        echo -ne "${CYAN}${prompt}${NC}" >&2
+        echo -ne "${CYAN}Enter user@host: ${NC}" >&2
         local target
         read -r target
+        [[ -z "$target" ]] && return 1
         echo "$target"
     fi
 }
