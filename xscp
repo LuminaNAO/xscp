@@ -380,20 +380,18 @@ do_send() {
         remote_path=$(pick_remote_path "$userhost" "$port" "" "Pick remote destination") || die "No path selected"
     fi
 
-    # Confirm
-    local port_str=""
-    [[ "$port" != "22" ]] && port_str=" -P ${port}"
-    echo ""
-    echo -e "${GREEN}${BOLD}Transfer:${NC} scp${port_str} ${local_path} ${userhost}:${remote_path}"
-    echo -ne "${YELLOW}Proceed? [Y/n]: ${NC}"
-    read -r confirm
-    [[ "$confirm" =~ ^[nN] ]] && { info "Cancelled"; return 0; }
-
     # Build scp command
     local scp_args=()
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
     [[ -d "$local_path" ]] && scp_args+=(-r)
     scp_args+=("$local_path" "${userhost}:${remote_path}")
+
+    # Show full command and confirm
+    echo ""
+    echo -e "${GREEN}${BOLD}>>>${NC} scp ${scp_args[*]}"
+    echo -ne "${YELLOW}Proceed? [Y/n]: ${NC}"
+    read -r confirm
+    [[ "$confirm" =~ ^[nN] ]] && { info "Cancelled"; return 0; }
 
     scp "${scp_args[@]}"
     local rc=$?
@@ -433,19 +431,17 @@ do_recv() {
         local_path=$(pick_local_dest "Pick local destination" ".") || local_path="."
     fi
 
-    # Confirm
-    local port_str=""
-    [[ "$port" != "22" ]] && port_str=" -P ${port}"
-    echo ""
-    echo -e "${GREEN}${BOLD}Transfer:${NC} scp${port_str} ${userhost}:${remote_path} ${local_path}"
-    echo -ne "${YELLOW}Proceed? [Y/n]: ${NC}"
-    read -r confirm
-    [[ "$confirm" =~ ^[nN] ]] && { info "Cancelled"; return 0; }
-
     # Build scp command
     local scp_args=()
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
     scp_args+=("${userhost}:${remote_path}" "$local_path")
+
+    # Show full command and confirm
+    echo ""
+    echo -e "${GREEN}${BOLD}>>>${NC} scp ${scp_args[*]}"
+    echo -ne "${YELLOW}Proceed? [Y/n]: ${NC}"
+    read -r confirm
+    [[ "$confirm" =~ ^[nN] ]] && { info "Cancelled"; return 0; }
 
     scp "${scp_args[@]}"
     local rc=$?
