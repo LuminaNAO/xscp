@@ -67,6 +67,14 @@ Transfers are logged to `~/.xscp_history` as pipe-delimited records:
 timestamp|direction|user@host|port|remote_path|local_path
 ```
 
+## Contributing
+
+The **primary repository** is on [Codeberg](https://codeberg.org/LuminaNAO/xscp).
+Pull requests, issues, and discussions should be directed there.
+
+The [GitHub](https://github.com/LuminaNAO/xscp) mirror is read-only —
+pull requests opened there will be ignored.
+
 ## License
 
-MIT
+AGPL-3.0-or-later
