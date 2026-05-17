@@ -6,7 +6,10 @@ set -euo pipefail
 
 HISTORY_FILE="$HOME/.xscp_history"
 MOUNT_BASE="/tmp/xscp-mount"
+CONTROL_DIR="/tmp/xscp-ctl"
 VERSION="0.1.0"
+
+mkdir -p "$CONTROL_DIR"
 
 # Colors
 RED='\033[0;31m'
@@ -29,10 +32,45 @@ _xscp_global_cleanup() {
         fi
         rmdir "$mp" 2>/dev/null || true
     done
+    # Close any control sockets we opened
+    for sock in "${CONTROL_DIR}"/*.sock; do
+        [[ -e "$sock" ]] || continue
+        ssh -o ControlPath="$sock" -O exit dummy 2>/dev/null || true
+    done
 }
 trap _xscp_global_cleanup EXIT INT TERM HUP
 
 # --- Utility functions ---
+
+# --- SSH connection multiplexing ---
+# Reuse a single authenticated connection for sshfs + scp
+
+_xscp_ctl_path() {
+    local userhost="$1" port="$2"
+    echo "${CONTROL_DIR}/${userhost}_${port}.sock"
+}
+
+# Open a master connection (authenticates once)
+_xscp_ctl_open() {
+    local userhost="$1" port="$2"
+    local ctl
+    ctl=$(_xscp_ctl_path "$userhost" "$port")
+    # Already open?
+    if ssh -o ControlPath="$ctl" -O check "$userhost" 2>/dev/null; then
+        return 0
+    fi
+    info "Authenticating to ${userhost}..."
+    ssh -o ControlMaster=yes -o ControlPath="$ctl" -o ControlPersist=300 \
+        -p "$port" -fN "$userhost"
+}
+
+# Close a master connection
+_xscp_ctl_close() {
+    local userhost="$1" port="$2"
+    local ctl
+    ctl=$(_xscp_ctl_path "$userhost" "$port")
+    ssh -o ControlPath="$ctl" -O exit "$userhost" 2>/dev/null || true
+}
 
 die() { echo -e "${RED}error:${NC} $*" >&2; exit 1; }
 info() { echo -e "${CYAN}::${NC} $*" >&2; }
@@ -139,8 +177,12 @@ replay_history_line() {
             ;;
     esac
 
-    local port_args=()
-    [[ "$port" != "22" ]] && port_args=(-P "$port")
+    _xscp_ctl_open "$userhost" "$port"
+    local ctl
+    ctl=$(_xscp_ctl_path "$userhost" "$port")
+
+    local port_args=(-o "ControlPath=${ctl}")
+    [[ "$port" != "22" ]] && port_args+=(-P "$port")
 
     if [[ "$dir" == "send" ]]; then
         info "scp ${port_args[*]:-} ${lpath} ${userhost}:${rpath}"
@@ -292,8 +334,13 @@ pick_remote_path() {
     mkdir -p "$mountpoint"
     _XSCP_ACTIVE_MOUNTS+=("$mountpoint")
 
+    # Open shared SSH connection (authenticates once)
+    _xscp_ctl_open "$userhost" "$port"
+    local ctl
+    ctl=$(_xscp_ctl_path "$userhost" "$port")
+
     info "Mounting ${userhost}:~/ via sshfs..."
-    local sshfs_opts="-o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3"
+    local sshfs_opts="-o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,ControlPath=${ctl}"
     [[ "$port" != "22" ]] && sshfs_opts="$sshfs_opts -p $port"
 
     # Mount home directory (empty path = home dir in sshfs)
@@ -402,8 +449,13 @@ do_send() {
         remote_path=$(pick_remote_path "$userhost" "$port" "" "Pick remote destination") || die "No path selected"
     fi
 
+    # Ensure shared SSH connection is open
+    _xscp_ctl_open "$userhost" "$port"
+    local ctl
+    ctl=$(_xscp_ctl_path "$userhost" "$port")
+
     # Build scp command
-    local scp_args=()
+    local scp_args=(-o "ControlPath=${ctl}")
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
     [[ -d "$local_path" ]] && scp_args+=(-r)
     scp_args+=("$local_path" "${userhost}:${remote_path}")
@@ -453,9 +505,14 @@ do_recv() {
         local_path=$(pick_local_dest "Pick local destination" ".") || local_path="."
     fi
 
+    # Ensure shared SSH connection is open
+    _xscp_ctl_open "$userhost" "$port"
+    local ctl
+    ctl=$(_xscp_ctl_path "$userhost" "$port")
+
     # Build scp command - handle multiple newline-separated remote paths
     # Always pass -r since we can't cheaply check if remote path is a dir
-    local scp_args=(-r)
+    local scp_args=(-r -o "ControlPath=${ctl}")
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
     while IFS= read -r rp; do
         [[ -z "$rp" ]] && continue
