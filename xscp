@@ -19,6 +19,19 @@ NC='\033[0m'
 # Ensure history file exists
 touch "$HISTORY_FILE"
 
+# Track active mounts for cleanup
+_XSCP_ACTIVE_MOUNTS=()
+
+_xscp_global_cleanup() {
+    for mp in "${_XSCP_ACTIVE_MOUNTS[@]}"; do
+        if mountpoint -q "$mp" 2>/dev/null; then
+            fusermount -u "$mp" 2>/dev/null || fusermount3 -u "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+        fi
+        rmdir "$mp" 2>/dev/null || true
+    done
+}
+trap _xscp_global_cleanup EXIT INT TERM HUP
+
 # --- Utility functions ---
 
 die() { echo -e "${RED}error:${NC} $*" >&2; exit 1; }
@@ -227,8 +240,11 @@ pick_local_dest() {
 
 # Mount remote filesystem temporarily and let user browse
 pick_remote_path() {
-    local userhost="$1" port="$2" start_dir="${3:-/}"
+    local userhost="$1" port="$2" start_dir="${3:-}"
     local prompt="${4:-Pick remote file/dir}"
+
+    # Default to remote user's home directory
+    [[ -z "$start_dir" ]] && start_dir=""
 
     if ! has_sshfs; then
         # No sshfs - manual entry with path completion hint
@@ -240,31 +256,23 @@ pick_remote_path() {
         return
     fi
 
-    local mountpoint="${MOUNT_BASE}-$$"
+    local mountpoint="${MOUNT_BASE}-$$-${RANDOM}"
     mkdir -p "$mountpoint"
+    _XSCP_ACTIVE_MOUNTS+=("$mountpoint")
 
-    # Cleanup trap
-    _xscp_cleanup() {
-        if mountpoint -q "$mountpoint" 2>/dev/null; then
-            fusermount -u "$mountpoint" 2>/dev/null || fusermount3 -u "$mountpoint" 2>/dev/null || umount "$mountpoint" 2>/dev/null || true
-        fi
-        rmdir "$mountpoint" 2>/dev/null || true
-    }
-    trap _xscp_cleanup EXIT
-
-    info "Mounting ${userhost}:${start_dir} via sshfs..."
+    info "Mounting ${userhost}:~/ via sshfs..."
     local sshfs_opts="-o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3"
     [[ "$port" != "22" ]] && sshfs_opts="$sshfs_opts -p $port"
 
-    if ! sshfs ${sshfs_opts} "${userhost}:${start_dir}" "$mountpoint" 2>/dev/null; then
-        # Try root if start_dir failed
-        if [[ "$start_dir" != "/" ]]; then
-            warn "Could not mount ${start_dir}, trying /"
-            sshfs ${sshfs_opts} "${userhost}:/" "$mountpoint" || die "sshfs mount failed"
-            start_dir="/"
-        else
+    # Mount home directory (empty path = home dir in sshfs)
+    if ! sshfs ${sshfs_opts} "${userhost}:" "$mountpoint" 2>/dev/null; then
+        warn "Could not mount home dir, trying /"
+        if ! sshfs ${sshfs_opts} "${userhost}:/" "$mountpoint" 2>/dev/null; then
             die "sshfs mount failed"
         fi
+        start_dir="/"
+    else
+        start_dir="~"
     fi
 
     info "$prompt (browsing ${userhost}:${start_dir})"
@@ -278,27 +286,44 @@ pick_remote_path() {
             rm -f "$sel"
         else
             rm -f "$sel"
-            _xscp_cleanup
+            _xscp_unmount "$mountpoint"
             return 1
         fi
     else
         selected=$(find "$mountpoint" -maxdepth 3 2>/dev/null | \
-            sed "s|${mountpoint}|${userhost}:|" | \
+            sed "s|${mountpoint}|${start_dir}/|" | \
             fzf --height=20 --reverse --prompt="$prompt: " | \
-            sed "s|${userhost}:||")
-        [[ -z "$selected" ]] && { _xscp_cleanup; return 1; }
+            sed "s|${start_dir}/||")
+        [[ -z "$selected" ]] && { _xscp_unmount "$mountpoint"; return 1; }
         selected="${mountpoint}${selected}"
     fi
 
     # Convert mountpoint path back to remote path
     local remote_path="${selected#$mountpoint}"
-    [[ -z "$remote_path" ]] && remote_path="/"
-    remote_path="${start_dir%/}${remote_path}"
+    [[ -z "$remote_path" ]] && remote_path=""
+    if [[ "$start_dir" == "~" ]]; then
+        remote_path="~${remote_path}"
+    else
+        remote_path="${start_dir%/}${remote_path}"
+    fi
 
-    _xscp_cleanup
-    trap - EXIT
-
+    _xscp_unmount "$mountpoint"
     echo "$remote_path"
+}
+
+# Unmount a single mountpoint and remove from tracking
+_xscp_unmount() {
+    local mp="$1"
+    if mountpoint -q "$mp" 2>/dev/null; then
+        fusermount -u "$mp" 2>/dev/null || fusermount3 -u "$mp" 2>/dev/null || umount -l "$mp" 2>/dev/null || true
+    fi
+    rmdir "$mp" 2>/dev/null || true
+    # Remove from active mounts
+    local new_mounts=()
+    for m in "${_XSCP_ACTIVE_MOUNTS[@]}"; do
+        [[ "$m" != "$mp" ]] && new_mounts+=("$m")
+    done
+    _XSCP_ACTIVE_MOUNTS=("${new_mounts[@]+"${new_mounts[@]}"}")
 }
 
 # --- Transfer functions ---
@@ -326,7 +351,7 @@ do_send() {
 
     # Pick remote destination
     if [[ -z "$remote_path" ]]; then
-        remote_path=$(pick_remote_path "$userhost" "$port" "~" "Pick remote destination") || die "No path selected"
+        remote_path=$(pick_remote_path "$userhost" "$port" "" "Pick remote destination") || die "No path selected"
     fi
 
     # Confirm
@@ -373,7 +398,7 @@ do_recv() {
 
     # Pick remote file
     if [[ -z "$remote_path" ]]; then
-        remote_path=$(pick_remote_path "$userhost" "$port" "/" "Pick remote file/dir to receive") || die "No path selected"
+        remote_path=$(pick_remote_path "$userhost" "$port" "" "Pick remote file/dir to receive") || die "No path selected"
     fi
     info "Receiving: ${BOLD}${userhost}:${remote_path}${NC}"
 
