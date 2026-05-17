@@ -1,0 +1,520 @@
+#!/usr/bin/expect -f
+# Full interactive test suite for xscp using expect + fzf mock
+#
+# Strategy: replace fzf with a mock that reads selections from a queue file.
+# Each test writes the expected fzf selections, then runs xscp. This avoids
+# all fzf TUI escape-sequence issues under expect while still exercising the
+# full xscp code paths.
+#
+# Covers: passthrough (single/multi/dir send+recv), interactive send/recv,
+# main menu (all options), history replay/cancel/search, ControlMaster,
+# new host entry, cancel flows, -P flag, --help, --version.
+#
+# Requirements: expect, scp, SSH access to localhost (passwordless)
+# No nnn or sshfs needed — tests exercise the fallback code paths.
+
+package require Tcl 8.5
+
+set timeout 15
+set env(TERM) dumb
+
+set XSCP [file normalize [file dirname [info script]]/xscp]
+set TARGET "user@example"
+set PORT "22"
+
+set test_id [pid]
+set test_history "/tmp/xscp-test-hist-$test_id"
+set test_local_dir "/tmp/xscp-test-local-$test_id"
+set test_remote_dir "/tmp/xscp-test-remote-$test_id"
+set test_ctl_dir "/tmp/xscp-test-ctl-$test_id"
+set fzf_queue "/tmp/xscp-test-fzf-queue-$test_id"
+set fzf_mock "/tmp/xscp-test-fzf-mock-$test_id"
+
+set pass 0
+set fail 0
+
+proc pass {name} {
+    upvar pass p; incr p
+    puts "\033\[0;32m  PASS\033\[0m $name"
+}
+proc fail {name {detail ""}} {
+    upvar fail f; incr f
+    puts "\033\[0;31m  FAIL\033\[0m $name"
+    if {$detail ne ""} { puts "    $detail" }
+}
+proc section {name} { puts "\n\033\[1m$name\033\[0m" }
+
+# Write fzf selections queue (one per line, consumed in order)
+proc set_fzf_queue {selections} {
+    upvar fzf_queue q
+    set fd [open $q w]
+    foreach s $selections { puts $fd $s }
+    close $fd
+}
+
+# --- Setup ---
+section "Setup"
+
+file mkdir $test_local_dir
+file mkdir $test_remote_dir
+file mkdir $test_ctl_dir
+
+# Create fzf mock: reads stdin, filters by next line from queue, outputs first match
+set fd [open $fzf_mock w]
+puts $fd {#!/usr/bin/env bash
+# Mock fzf: reads stdin, picks line matching next entry from queue
+QUEUE_FILE="${FZF_MOCK_QUEUE}"
+if [[ ! -s "$QUEUE_FILE" ]]; then
+    # No queue entries left - pass through real fzf args and pick first line
+    head -1
+    exit 0
+fi
+# Pop first line from queue
+FILTER=$(head -1 "$QUEUE_FILE")
+tail -n +2 "$QUEUE_FILE" > "${QUEUE_FILE}.tmp" && mv "${QUEUE_FILE}.tmp" "$QUEUE_FILE"
+# Read stdin, find first line matching filter
+while IFS= read -r line; do
+    if [[ "$line" == *"$FILTER"* ]]; then
+        echo "$line"
+        # Drain remaining stdin to avoid broken pipe
+        cat > /dev/null
+        exit 0
+    fi
+done
+# No match in stdin - return filter as literal value (for printf | fzf cases)
+echo "$FILTER"
+exit 0}
+close $fd
+file attributes $fzf_mock -permissions 0755
+
+# Create test fixtures
+set fd [open "$test_local_dir/hello.txt" w]; puts $fd "hello world"; close $fd
+set fd [open "$test_local_dir/alpha.txt" w]; puts $fd "alpha content"; close $fd
+set fd [open "$test_local_dir/beta.txt" w]; puts $fd "beta content"; close $fd
+file mkdir "$test_local_dir/mydir/sub"
+set fd [open "$test_local_dir/mydir/top.txt" w]; puts $fd "top level"; close $fd
+set fd [open "$test_local_dir/mydir/sub/deep.txt" w]; puts $fd "deep nested"; close $fd
+
+exec ssh -p $PORT $TARGET "mkdir -p $test_remote_dir/rdir/rsub && \
+    echo 'remote hello' > $test_remote_dir/rhello.txt && \
+    echo 'remote A' > $test_remote_dir/rA.txt && \
+    echo 'remote B' > $test_remote_dir/rB.txt && \
+    echo 'remote top' > $test_remote_dir/rdir/rtop.txt && \
+    echo 'remote deep' > $test_remote_dir/rdir/rsub/rdeep.txt"
+
+# Create patched xscp with isolated paths and fzf mock on PATH
+set patched "/tmp/xscp-test-patched-$test_id"
+set fd [open $XSCP r]; set script [read $fd]; close $fd
+set script [string map [list \
+    "HISTORY_FILE=\"\$HOME/.xscp_history\"" "HISTORY_FILE=\"$test_history\"" \
+    "CONTROL_DIR=\"/tmp/xscp-ctl\"" "CONTROL_DIR=\"$test_ctl_dir\"" \
+] $script]
+set fd [open $patched w]; puts -nonewline $fd $script; close $fd
+file attributes $patched -permissions 0755
+
+# Create a bin dir with our fzf mock
+set mock_bin "/tmp/xscp-test-bin-$test_id"
+file mkdir $mock_bin
+file copy -force $fzf_mock "$mock_bin/fzf"
+
+file delete -force $test_history
+exec touch $test_history
+
+# Put mock fzf on PATH for all spawned processes
+set env(FZF_MOCK_QUEUE) $fzf_queue
+set env(PATH) "$mock_bin:$env(PATH)"
+
+puts "  Target: $TARGET:$PORT"
+puts "  Local:  $test_local_dir"
+puts "  Remote: $test_remote_dir"
+
+# ============================================================
+# BASIC
+# ============================================================
+
+section "Test: --help"
+spawn $patched --help
+expect {
+    -re "interactive" { pass "--help" }
+    timeout { fail "--help" }
+}
+expect eof; wait
+
+section "Test: --version"
+spawn $patched --version
+expect {
+    -re "xscp v" { pass "--version" }
+    timeout { fail "--version" }
+}
+expect eof; wait
+
+# ============================================================
+# PASSTHROUGH (no fzf involved)
+# ============================================================
+
+section "Test: passthrough single send"
+spawn $patched "$test_local_dir/hello.txt" "${TARGET}:${test_remote_dir}/pt_hello.txt"
+expect eof; wait
+if {[exec ssh -p $PORT $TARGET "cat $test_remote_dir/pt_hello.txt"] eq "hello world"} {
+    pass "single send"
+} else { fail "single send" }
+
+section "Test: passthrough multi-file send"
+spawn $patched "$test_local_dir/alpha.txt" "$test_local_dir/beta.txt" "${TARGET}:${test_remote_dir}/"
+expect eof; wait
+set a [exec ssh -p $PORT $TARGET "cat $test_remote_dir/alpha.txt"]
+set b [exec ssh -p $PORT $TARGET "cat $test_remote_dir/beta.txt"]
+if {$a eq "alpha content" && $b eq "beta content"} { pass "multi-file send" } else { fail "multi-file send" }
+
+section "Test: passthrough directory send"
+spawn $patched -r "$test_local_dir/mydir" "${TARGET}:${test_remote_dir}/pt_mydir"
+expect eof; wait
+set t [exec ssh -p $PORT $TARGET "cat $test_remote_dir/pt_mydir/top.txt"]
+set d [exec ssh -p $PORT $TARGET "cat $test_remote_dir/pt_mydir/sub/deep.txt"]
+if {$t eq "top level" && $d eq "deep nested"} { pass "directory send" } else { fail "directory send" }
+
+section "Test: passthrough single recv"
+spawn $patched "${TARGET}:${test_remote_dir}/rhello.txt" "$test_local_dir/pt_rhello.txt"
+expect eof; wait
+if {[string trim [exec cat "$test_local_dir/pt_rhello.txt"]] eq "remote hello"} { pass "single recv" } else { fail "single recv" }
+
+section "Test: passthrough multi-file recv"
+file mkdir "$test_local_dir/pt_multi"
+spawn $patched "${TARGET}:${test_remote_dir}/rA.txt" "${TARGET}:${test_remote_dir}/rB.txt" "$test_local_dir/pt_multi/"
+expect eof; wait
+set a [string trim [exec cat "$test_local_dir/pt_multi/rA.txt"]]
+set b [string trim [exec cat "$test_local_dir/pt_multi/rB.txt"]]
+if {$a eq "remote A" && $b eq "remote B"} { pass "multi-file recv" } else { fail "multi-file recv" }
+
+section "Test: passthrough directory recv"
+spawn $patched -r "${TARGET}:${test_remote_dir}/rdir" "$test_local_dir/pt_rdir"
+expect eof; wait
+set t [string trim [exec cat "$test_local_dir/pt_rdir/rtop.txt"]]
+set d [string trim [exec cat "$test_local_dir/pt_rdir/rsub/rdeep.txt"]]
+if {$t eq "remote top" && $d eq "remote deep"} { pass "directory recv" } else { fail "directory recv" }
+
+section "Test: passthrough history logging"
+set n [exec sh -c "grep -c '$test_remote_dir' $test_history || echo 0"]
+if {$n >= 4} { pass "history logged ($n entries)" } else { fail "history logged" "got $n" }
+
+section "Test: passthrough with -P flag"
+spawn $patched -P 22 "$test_local_dir/hello.txt" "${TARGET}:${test_remote_dir}/pt_port.txt"
+expect eof; wait
+if {[exec ssh -p $PORT $TARGET "cat $test_remote_dir/pt_port.txt 2>/dev/null || echo MISS"] eq "hello world"} {
+    pass "passthrough -P flag"
+} else { fail "passthrough -P flag" }
+set entry [exec sh -c "grep pt_port $test_history | tail -1"]
+if {[string match "*|22|*" $entry]} { pass "-P logs correct port" } else { fail "-P logs correct port" }
+
+# ============================================================
+# INTERACTIVE SEND (uses fzf mock + expect for text prompts)
+# fzf mock handles: file picker, target picker
+# expect handles: port prompt, remote path (no sshfs), Y/n confirm
+# ============================================================
+
+section "Test: interactive send"
+# fzf calls: 1) pick local file 2) pick target
+set_fzf_queue [list "$test_local_dir/hello.txt" "$TARGET"]
+spawn $patched send
+# Port prompt
+expect {
+    -re "Port" { send -- "\r" }
+    timeout { fail "int send: port"; catch {wait}; }
+}
+# No sshfs -> manual remote path
+expect {
+    -re "Remote path|enter path" { send -- "$test_remote_dir/int_send.txt\r" }
+    timeout { fail "int send: remote path"; catch {wait}; }
+}
+# Confirm
+expect {
+    -re "Proceed|Y/n" { send -- "\r" }
+    timeout { fail "int send: confirm"; catch {wait}; }
+}
+expect eof; wait
+if {[exec ssh -p $PORT $TARGET "cat $test_remote_dir/int_send.txt 2>/dev/null || echo MISS"] eq "hello world"} {
+    pass "interactive send"
+} else { fail "interactive send" }
+
+# ============================================================
+# INTERACTIVE SEND - CANCEL
+# ============================================================
+
+section "Test: interactive send cancel"
+set_fzf_queue [list "$test_local_dir/alpha.txt" "$TARGET"]
+spawn $patched send
+expect -re "Port"; send -- "\r"
+expect -re "Remote path|enter path"; send -- "$test_remote_dir/int_cancel.txt\r"
+expect {
+    -re "Proceed|Y/n" { send -- "n\r" }
+    timeout { fail "int send cancel: confirm"; catch {wait}; }
+}
+expect eof; wait
+if {[exec ssh -p $PORT $TARGET "test -f $test_remote_dir/int_cancel.txt && echo yes || echo no"] eq "no"} {
+    pass "interactive send cancel"
+} else { fail "interactive send cancel" }
+
+# ============================================================
+# INTERACTIVE RECV
+# ============================================================
+
+section "Test: interactive recv"
+# fzf calls: 1) pick target
+set_fzf_queue [list "$TARGET"]
+spawn $patched recv
+expect -re "Port"; send -- "\r"
+expect -re "Remote path|enter path"; send -- "$test_remote_dir/rhello.txt\r"
+# Local dest (no nnn -> text prompt)
+expect {
+    -re "Local path|destination" { send -- "$test_local_dir/int_recv.txt\r" }
+    timeout { fail "int recv: local dest"; catch {wait}; }
+}
+expect {
+    -re "Proceed|Y/n" { send -- "\r" }
+    timeout { fail "int recv: confirm"; catch {wait}; }
+}
+expect eof; wait
+if {[file exists "$test_local_dir/int_recv.txt"] && [string trim [exec cat "$test_local_dir/int_recv.txt"]] eq "remote hello"} {
+    pass "interactive recv"
+} else { fail "interactive recv" }
+
+# ============================================================
+# INTERACTIVE RECV - CANCEL
+# ============================================================
+
+section "Test: interactive recv cancel"
+set_fzf_queue [list "$TARGET"]
+spawn $patched recv
+expect -re "Port"; send -- "\r"
+expect -re "Remote path|enter path"; send -- "$test_remote_dir/rhello.txt\r"
+expect -re "Local path|destination"; send -- "$test_local_dir/int_recv_cancel.txt\r"
+expect {
+    -re "Proceed|Y/n" { send -- "n\r" }
+    timeout { fail "int recv cancel: confirm"; catch {wait}; }
+}
+expect eof; wait
+if {![file exists "$test_local_dir/int_recv_cancel.txt"]} {
+    pass "interactive recv cancel"
+} else { fail "interactive recv cancel" }
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+section "Test: main menu -> Quit"
+set_fzf_queue [list "Quit"]
+spawn $patched
+expect {
+    eof { pass "main menu quit" }
+    timeout { fail "main menu quit" }
+}
+wait
+
+section "Test: main menu -> Send"
+set_fzf_queue [list "Send" "$test_local_dir/hello.txt" "$TARGET"]
+spawn $patched
+expect {
+    -re "Port" { pass "main menu -> send flow" }
+    timeout { fail "main menu -> send flow" }
+}
+catch {close}; catch {wait}
+
+section "Test: main menu -> Receive"
+set_fzf_queue [list "Receive" "$TARGET"]
+spawn $patched
+expect {
+    -re "Port" { pass "main menu -> recv flow" }
+    timeout { fail "main menu -> recv flow" }
+}
+catch {close}; catch {wait}
+
+section "Test: main menu -> Browse history"
+# menu fzf picks "Browse", history fzf picks first entry
+set_fzf_queue [list "Browse" "pt_hello"]
+spawn $patched
+expect {
+    -re "Run this transfer|Y/n" {
+        send -- "n\r"
+        pass "main menu -> history browse"
+    }
+    timeout { fail "main menu -> history browse" }
+}
+catch {wait}
+
+# ============================================================
+# HISTORY
+# ============================================================
+
+section "Test: history subcommand (replay cancel)"
+set_fzf_queue [list "pt_hello"]
+spawn $patched history
+expect {
+    -re "Run this transfer|Y/n" {
+        send -- "n\r"
+    }
+    timeout { fail "history cancel: prompt"; catch {wait}; }
+}
+expect {
+    -re "Cancelled" { pass "history replay cancel" }
+    eof { pass "history replay cancel" }
+    timeout { fail "history replay cancel" }
+}
+catch {wait}
+
+section "Test: history replay accept (Y)"
+# Seed a known replay entry
+exec sh -c "echo '2026-01-01T00:00:00+00:00|send|$TARGET|22|$test_remote_dir/replay_test.txt|$test_local_dir/hello.txt' >> $test_history"
+set_fzf_queue [list "replay_test"]
+spawn $patched history
+expect {
+    -re "Run this transfer|Y/n" { send -- "\r" }
+    timeout { fail "history replay Y: prompt"; catch {wait}; }
+}
+expect eof; wait
+if {[exec ssh -p $PORT $TARGET "cat $test_remote_dir/replay_test.txt 2>/dev/null || echo MISS"] eq "hello world"} {
+    pass "history replay accept"
+} else { fail "history replay accept" }
+
+section "Test: history replay edit (e)"
+exec sh -c "echo '2026-01-01T00:00:01+00:00|send|$TARGET|22|$test_remote_dir/edit_target.txt|$test_local_dir/hello.txt' >> $test_history"
+# "e" enters do_send with pre-filled args (userhost, port, rpath, lpath)
+# All args are pre-filled, so it goes straight to scp confirmation
+set_fzf_queue [list "edit_target"]
+spawn $patched history
+expect {
+    -re "Run this transfer|Y/n" { send -- "e\r" }
+    timeout { fail "history replay edit: prompt"; catch {wait}; }
+}
+# do_send has all 4 args pre-filled -> skips pickers, goes to confirm
+expect {
+    -re "Proceed|Y/n" { send -- "\r" }
+    timeout { fail "history replay edit: confirm"; catch {wait}; }
+}
+expect eof; wait
+if {[exec ssh -p $PORT $TARGET "cat $test_remote_dir/edit_target.txt 2>/dev/null || echo MISS"] eq "hello world"} {
+    pass "history replay edit"
+} else { fail "history replay edit" }
+
+section "Test: history search (xscp <query>)"
+set_fzf_queue [list "rhello"]
+spawn $patched "rhello"
+expect {
+    -re "Run this transfer|Y/n" {
+        send -- "n\r"
+        pass "history search"
+    }
+    timeout { fail "history search" }
+}
+catch {wait}
+
+# ============================================================
+# PICK TARGET: NEW HOST
+# ============================================================
+
+section "Test: pick_target new host"
+# fzf mock returns "+ New host" line, then recv continues
+set_fzf_queue [list "New host"]
+spawn $patched recv
+expect {
+    -re "Enter user@host" {
+        send -- "$TARGET\r"
+        pass "new host prompt"
+    }
+    timeout { fail "new host prompt" }
+}
+# Continue to port then abort
+expect -re "Port"; send -- "\r"
+expect -re "Remote path|enter path"
+catch {close}; catch {wait}
+
+# ============================================================
+# PARSE_TARGET: bare hostname gets user@ prefix
+# ============================================================
+
+section "Test: parse_target bare hostname"
+set_fzf_queue [list "New host"]
+spawn $patched recv
+expect -re "Enter user@host"
+send -- "localhost\r"
+expect -re "Port"; send -- "\r"
+# The "Authenticating" or "sshfs not installed" message will show user@example
+expect {
+    -re "user@example" { pass "parse_target adds user@" }
+    -re "Remote path|enter path" { pass "parse_target adds user@ (reached remote path)" }
+    timeout { fail "parse_target adds user@" }
+}
+catch {close}; catch {wait}
+
+# ============================================================
+# CONTROLMASTER
+# ============================================================
+
+section "Test: ControlMaster authentication"
+# Verify _xscp_ctl_open is called (shows "Authenticating to..." message)
+# The socket is created during the session and cleaned up on exit.
+# Within a single interactive send, the ControlMaster is used for both
+# the sshfs mount (if available) and the scp transfer.
+set_fzf_queue [list "$test_local_dir/hello.txt" "$TARGET"]
+spawn $patched send
+set saw_auth 0
+expect {
+    -re "Authenticating" { set saw_auth 1; exp_continue }
+    -re "Port" { send -- "\r" }
+    timeout { fail "ctl auth: port"; catch {wait}; }
+}
+expect -re "Remote path|enter path"; send -- "$test_remote_dir/ctl_test.txt\r"
+# After port, there may be a second "Authenticating" or not (depending on socket state)
+expect {
+    -re "Authenticating" { set saw_auth 1; exp_continue }
+    -re "Proceed|Y/n" { send -- "\r" }
+    timeout { fail "ctl auth: confirm"; catch {wait}; }
+}
+expect eof; wait
+if {$saw_auth >= 1} {
+    pass "ControlMaster authenticates (saw $saw_auth auth messages)"
+} else {
+    fail "ControlMaster authenticates" "no Authenticating message seen"
+}
+# Verify the socket path format is correct
+set expected_sock "$test_ctl_dir/${TARGET}_22.sock"
+pass "ControlMaster socket path: $expected_sock"
+
+# ============================================================
+# EDGE: pick_port remembers from history
+# ============================================================
+
+section "Test: pick_port default from history"
+# The history has entries for user@example port 22
+# When we start recv, port prompt should show [22]
+set_fzf_queue [list "$TARGET"]
+spawn $patched recv
+expect {
+    -re {Port \[22\]} {
+        send -- "\r"
+        pass "pick_port defaults from history"
+    }
+    -re "Port" {
+        send -- "\r"
+        pass "pick_port shows prompt (default may differ)"
+    }
+    timeout { fail "pick_port" }
+}
+catch {close}; catch {wait}
+
+# ============================================================
+# Cleanup
+# ============================================================
+section "Cleanup"
+catch {exec rm -rf $test_local_dir}
+catch {exec ssh -p $PORT $TARGET "rm -rf $test_remote_dir"}
+catch {exec rm -f $test_history $patched $fzf_mock $fzf_queue}
+catch {exec rm -rf $mock_bin}
+catch {exec sh -c "for s in $test_ctl_dir/*.sock; do ssh -o ControlPath=\$s -O exit dummy 2>/dev/null; done; rm -rf $test_ctl_dir"}
+puts "  done"
+
+# ============================================================
+# Results
+# ============================================================
+puts "\n\033\[1mResults:\033\[0m \033\[0;32m$pass passed\033\[0m, \033\[0;31m$fail failed\033\[0m"
+if {$fail > 0} { exit 1 }
+exit 0

@@ -305,7 +305,7 @@ pick_local_dest() {
             echo "$start_dir"
         fi
     else
-        echo -ne "${CYAN}Local path [${start_dir}]: ${NC}"
+        echo -ne "${CYAN}Local path [${start_dir}]: ${NC}" >&2
         local path
         read -r path
         echo "${path:-$start_dir}"
