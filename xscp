@@ -49,11 +49,18 @@ has_sshfs() { command -v sshfs &>/dev/null; }
 
 nnn_hint() {
     local mode="${1:-file}"
-    echo -ne "${CYAN}nnn:${NC} ↑↓/jk navigate | →/l/Enter open dir | ←/h parent | " >&2
+    echo -e "${CYAN}nnn controls:${NC}" >&2
+    echo -e "  ${BOLD}↑↓${NC}/jk  navigate       ${BOLD}→${NC}/l/Enter  open dir" >&2
+    echo -e "  ${BOLD}←${NC}/h   parent dir     ${BOLD}.${NC}          toggle hidden files" >&2
     if [[ "$mode" == "dest" ]]; then
-        echo -e "Enter select item | q select current dir" >&2
+        echo -e "  ${BOLD}Enter${NC} select highlighted file or folder" >&2
+        echo -e "  ${BOLD}q${NC}     select current directory as destination" >&2
+    elif [[ "$mode" == "send" ]]; then
+        echo -e "  ${BOLD}Enter${NC} select highlighted file or folder to send" >&2
+        echo -e "  ${BOLD}q${NC}     cancel" >&2
     else
-        echo -e "Enter select file | q cancel" >&2
+        echo -e "  ${BOLD}Enter${NC} select highlighted file" >&2
+        echo -e "  ${BOLD}q${NC}     cancel" >&2
     fi
 }
 
@@ -201,7 +208,7 @@ pick_local_file() {
     local start_dir="${2:-.}"
     info "$prompt"
     if has_nnn; then
-        nnn_hint
+        nnn_hint "send"
         local sel
         sel=$(mktemp)
         nnn -p "$sel" "$start_dir" < /dev/tty > /dev/tty
