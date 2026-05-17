@@ -325,14 +325,23 @@ pick_remote_path() {
         selected="${mountpoint}${selected}"
     fi
 
-    # Convert mountpoint path back to remote path
-    local remote_path="${selected#$mountpoint}"
-    [[ -z "$remote_path" ]] && remote_path=""
-    if [[ "$start_dir" == "~" ]]; then
-        remote_path="~${remote_path}"
-    else
-        remote_path="${start_dir%/}${remote_path}"
-    fi
+    # Convert mountpoint path(s) back to remote path(s) (one per line)
+    local remote_path=""
+    while IFS= read -r sel_line; do
+        [[ -z "$sel_line" ]] && continue
+        local rp="${sel_line#$mountpoint}"
+        [[ -z "$rp" ]] && rp=""
+        if [[ "$start_dir" == "~" ]]; then
+            rp="~${rp}"
+        else
+            rp="${start_dir%/}${rp}"
+        fi
+        if [[ -n "$remote_path" ]]; then
+            remote_path="${remote_path}"$'\n'"${rp}"
+        else
+            remote_path="$rp"
+        fi
+    done <<< "$selected"
 
     _xscp_unmount "$mountpoint"
     echo "$remote_path"
@@ -432,10 +441,14 @@ do_recv() {
         local_path=$(pick_local_dest "Pick local destination" ".") || local_path="."
     fi
 
-    # Build scp command
+    # Build scp command - handle multiple newline-separated remote paths
     local scp_args=()
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
-    scp_args+=("${userhost}:${remote_path}" "$local_path")
+    while IFS= read -r rp; do
+        [[ -z "$rp" ]] && continue
+        scp_args+=("${userhost}:${rp}")
+    done <<< "$remote_path"
+    scp_args+=("$local_path")
 
     # Show full command and confirm
     echo ""
@@ -449,7 +462,10 @@ do_recv() {
 
     if [[ $rc -eq 0 ]]; then
         echo -e "${GREEN}Transfer complete${NC}"
-        history_add "recv" "$userhost" "$port" "$remote_path" "$local_path"
+        while IFS= read -r rp; do
+            [[ -z "$rp" ]] && continue
+            history_add "recv" "$userhost" "$port" "$rp" "$local_path"
+        done <<< "$remote_path"
     else
         echo -e "${RED}Transfer failed (exit $rc)${NC}"
     fi
