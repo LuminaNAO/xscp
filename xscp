@@ -180,7 +180,7 @@ pick_local_file() {
     if has_nnn; then
         local sel
         sel=$(mktemp)
-        nnn -p "$sel" "$start_dir"
+        nnn -p "$sel" "$start_dir" < /dev/tty > /dev/tty
         if [[ -s "$sel" ]]; then
             cat "$sel"
             rm -f "$sel"
@@ -202,7 +202,7 @@ pick_local_dest() {
         local sel
         sel=$(mktemp)
         # nnn picker mode - select a directory
-        nnn -p "$sel" "$start_dir"
+        nnn -p "$sel" "$start_dir" < /dev/tty > /dev/tty
         if [[ -s "$sel" ]]; then
             local picked
             picked=$(cat "$sel")
@@ -272,7 +272,7 @@ pick_remote_path() {
     if has_nnn; then
         local sel
         sel=$(mktemp)
-        nnn -p "$sel" "$mountpoint"
+        nnn -p "$sel" "$mountpoint" < /dev/tty > /dev/tty
         if [[ -s "$sel" ]]; then
             selected=$(cat "$sel")
             rm -f "$sel"
