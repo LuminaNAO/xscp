@@ -243,7 +243,7 @@ pick_local_dest() {
         elif [[ -s "$lastdir" ]]; then
             # User pressed q - use the last directory they were in
             local dir
-            dir=$(sed 's/^cd "\(.*\)"/\1/' "$lastdir")
+            dir=$(cat "$lastdir" | sed "s/^cd ['\"]//;s/['\"]$//")
             echo "$dir"
             rm -f "$sel" "$lastdir"
         else
@@ -308,7 +308,8 @@ pick_remote_path() {
             rm -f "$sel" "$lastdir"
         elif [[ -s "$lastdir" ]]; then
             # User pressed q - use the last directory they were in
-            selected=$(sed 's/^cd "\(.*\)"/\1/' "$lastdir")
+            # NNN_TMPFILE writes: cd "/path" or cd '/path'
+            selected=$(cat "$lastdir" | sed "s/^cd ['\"]//;s/['\"]$//")
             rm -f "$sel" "$lastdir"
         else
             rm -f "$sel" "$lastdir"
