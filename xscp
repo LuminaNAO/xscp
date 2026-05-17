@@ -442,7 +442,8 @@ do_recv() {
     fi
 
     # Build scp command - handle multiple newline-separated remote paths
-    local scp_args=()
+    # Always pass -r since we can't cheaply check if remote path is a dir
+    local scp_args=(-r)
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
     while IFS= read -r rp; do
         [[ -z "$rp" ]] && continue
