@@ -1,5 +1,7 @@
 # xscp
 
+> **⚠️ This GitHub repository is a read-only mirror.** The primary repository is on [Codeberg](https://codeberg.org/LuminaNAO/xscp). Please raise issues and submit pull requests there — submissions to this GitHub mirror will be ignored.
+
 Interactive scp wrapper with transfer history, fuzzy matching, and TUI file browsing.
 
 ## Features
@@ -55,7 +57,7 @@ xscp -P 2222 ./file.tar.gz user@host:/tmp/
 
 **Arch Linux (AUR):**
 ```bash
-yay -S xscp
+paru -S xscp
 ```
 
 **Manual:**
