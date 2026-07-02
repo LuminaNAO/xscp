@@ -6,7 +6,7 @@ set -euo pipefail
 
 HISTORY_FILE="$HOME/.xscp_history"
 MOUNT_BASE="/tmp/xscp-mount"
-VERSION="1.0.1"
+VERSION="2"
 
 # Per-process socket dir: no collisions between instances or users,
 # and no stale sockets surviving a crash
