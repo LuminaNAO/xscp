@@ -494,8 +494,8 @@ do_send() {
     read -r confirm
     [[ "$confirm" =~ ^[nN] ]] && { info "Cancelled"; return 0; }
 
-    scp "${scp_args[@]}"
-    local rc=$?
+    local rc=0
+    scp "${scp_args[@]}" || rc=$?
 
     if [[ $rc -eq 0 ]]; then
         echo -e "${GREEN}Transfer complete${NC}"
@@ -555,8 +555,8 @@ do_recv() {
     read -r confirm
     [[ "$confirm" =~ ^[nN] ]] && { info "Cancelled"; return 0; }
 
-    scp "${scp_args[@]}"
-    local rc=$?
+    local rc=0
+    scp "${scp_args[@]}" || rc=$?
 
     if [[ $rc -eq 0 ]]; then
         echo -e "${GREEN}Transfer complete${NC}"
