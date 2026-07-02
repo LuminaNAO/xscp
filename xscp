@@ -6,10 +6,11 @@ set -euo pipefail
 
 HISTORY_FILE="$HOME/.xscp_history"
 MOUNT_BASE="/tmp/xscp-mount"
-CONTROL_DIR="/tmp/xscp-ctl"
-VERSION="0.1.0"
+VERSION="1.0.1"
 
-mkdir -p "$CONTROL_DIR"
+# Per-process socket dir: no collisions between instances or users,
+# and no stale sockets surviving a crash
+CONTROL_DIR=$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/xscp-ctl.XXXXXX")
 
 # Colors
 RED='\033[0;31m'
@@ -32,11 +33,12 @@ _xscp_global_cleanup() {
         fi
         rmdir "$mp" 2>/dev/null || true
     done
-    # Close any control sockets we opened
+    # Close the control sockets this process opened
     for sock in "${CONTROL_DIR}"/*.sock; do
         [[ -e "$sock" ]] || continue
         ssh -o ControlPath="$sock" -O exit dummy 2>/dev/null || true
     done
+    rmdir "$CONTROL_DIR" 2>/dev/null || true
 }
 trap _xscp_global_cleanup EXIT INT TERM HUP
 
@@ -50,7 +52,9 @@ _xscp_ctl_path() {
     echo "${CONTROL_DIR}/${userhost}_${port}.sock"
 }
 
-# Open a master connection (authenticates once)
+# Open a master connection (authenticates once).
+# Returns non-zero if the master cannot be established; callers fall back
+# to plain per-command authentication instead of aborting.
 _xscp_ctl_open() {
     local userhost="$1" port="$2"
     local ctl
@@ -60,8 +64,13 @@ _xscp_ctl_open() {
         return 0
     fi
     info "Authenticating to ${userhost}..."
-    ssh -o ControlMaster=yes -o ControlPath="$ctl" -o ControlPersist=300 \
-        -p "$port" -fN "$userhost"
+    # stdout to /dev/null: the backgrounded master must not hold any pipe
+    # a caller may have around us
+    if ! ssh -o ControlMaster=yes -o ControlPath="$ctl" -o ControlPersist=300 \
+        -p "$port" -fN "$userhost" >/dev/null; then
+        warn "Could not open shared connection - continuing without it"
+        return 1
+    fi
 }
 
 # Close a master connection
@@ -177,11 +186,10 @@ replay_history_line() {
             ;;
     esac
 
-    _xscp_ctl_open "$userhost" "$port"
-    local ctl
-    ctl=$(_xscp_ctl_path "$userhost" "$port")
-
-    local port_args=(-o "ControlPath=${ctl}")
+    local port_args=()
+    if _xscp_ctl_open "$userhost" "$port"; then
+        port_args+=(-o "ControlPath=$(_xscp_ctl_path "$userhost" "$port")")
+    fi
     [[ "$port" != "22" ]] && port_args+=(-P "$port")
 
     if [[ "$dir" == "send" ]]; then
@@ -335,12 +343,12 @@ pick_remote_path() {
     _XSCP_ACTIVE_MOUNTS+=("$mountpoint")
 
     # Open shared SSH connection (authenticates once)
-    _xscp_ctl_open "$userhost" "$port"
-    local ctl
-    ctl=$(_xscp_ctl_path "$userhost" "$port")
+    local sshfs_opts="-o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3"
+    if _xscp_ctl_open "$userhost" "$port"; then
+        sshfs_opts="${sshfs_opts},ControlPath=$(_xscp_ctl_path "$userhost" "$port")"
+    fi
 
     info "Mounting ${userhost}:~/ via sshfs..."
-    local sshfs_opts="-o reconnect,ServerAliveInterval=15,ServerAliveCountMax=3,ControlPath=${ctl}"
     [[ "$port" != "22" ]] && sshfs_opts="$sshfs_opts -p $port"
 
     # Mount home directory (empty path = home dir in sshfs)
@@ -449,13 +457,11 @@ do_send() {
         remote_path=$(pick_remote_path "$userhost" "$port" "" "Pick remote destination") || die "No path selected"
     fi
 
-    # Ensure shared SSH connection is open
-    _xscp_ctl_open "$userhost" "$port"
-    local ctl
-    ctl=$(_xscp_ctl_path "$userhost" "$port")
-
     # Build scp command - handle multiple newline-separated local paths
-    local scp_args=(-o "ControlPath=${ctl}")
+    local scp_args=()
+    if _xscp_ctl_open "$userhost" "$port"; then
+        scp_args+=(-o "ControlPath=$(_xscp_ctl_path "$userhost" "$port")")
+    fi
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
     # Check if any selected path is a directory
     local need_r=false
@@ -518,14 +524,12 @@ do_recv() {
         local_path=$(pick_local_dest "Pick local destination" ".") || local_path="."
     fi
 
-    # Ensure shared SSH connection is open
-    _xscp_ctl_open "$userhost" "$port"
-    local ctl
-    ctl=$(_xscp_ctl_path "$userhost" "$port")
-
     # Build scp command - handle multiple newline-separated remote paths
     # Always pass -r since we can't cheaply check if remote path is a dir
-    local scp_args=(-r -o "ControlPath=${ctl}")
+    local scp_args=(-r)
+    if _xscp_ctl_open "$userhost" "$port"; then
+        scp_args+=(-o "ControlPath=$(_xscp_ctl_path "$userhost" "$port")")
+    fi
     [[ "$port" != "22" ]] && scp_args+=(-P "$port")
     while IFS= read -r rp; do
         [[ -z "$rp" ]] && continue
