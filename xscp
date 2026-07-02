@@ -221,8 +221,14 @@ pick_target() {
     targets=$(known_targets)
     local new_entry="+ New host (enter user@ip)"
     if [[ -n "$targets" ]]; then
+        # --print-query lets the user type an unlisted host directly;
+        # fzf prints "query\nselection" (no selection line if nothing matched)
+        local out rc=0
+        out=$({ echo "$new_entry"; sort -u <<< "$targets"; } | fzf --height=15 --reverse --print-query --prompt="$prompt") || rc=$?
+        [[ $rc -gt 1 ]] && return 1
         local picked
-        picked=$(printf '%s\n' "$new_entry" "$targets" | sort -u | sed "s|^${new_entry}$|${new_entry}|" | { echo "$new_entry"; grep -v "^${new_entry}$" || true; } | fzf --height=15 --reverse --prompt="$prompt") || return 1
+        picked=$(tail -1 <<< "$out")
+        [[ -z "$picked" ]] && return 1
         if [[ "$picked" == "$new_entry" ]]; then
             echo -ne "${CYAN}Enter user@host: ${NC}" >&2
             local target
