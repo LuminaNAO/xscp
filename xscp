@@ -456,6 +456,11 @@ do_send() {
     if [[ -z "$remote_path" ]]; then
         remote_path=$(pick_remote_path "$userhost" "$port" "" "Pick remote destination") || die "No path selected"
     fi
+    # nnn allows multi-select but a send has exactly one destination
+    if [[ "$remote_path" == *$'\n'* ]]; then
+        warn "Multiple destinations selected - using the first"
+        remote_path="${remote_path%%$'\n'*}"
+    fi
 
     # Build scp command - handle multiple newline-separated local paths
     local scp_args=()
